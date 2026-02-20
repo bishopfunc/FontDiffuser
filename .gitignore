@@ -4,6 +4,8 @@ outputs/
 run_sh/
 ckpt/
 ttf/
+*.png
+*.jpg
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

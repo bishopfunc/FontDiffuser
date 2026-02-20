@@ -1,7 +1,8 @@
-from .model import (FontDiffuserModel,
-                   FontDiffuserModelDPM)
+from .model import (FontDiffuserModel,                  
+                   FontDiffuserModelDPM,
+                   FontDiffuserModelDPMFewShot)
 from .criterion import ContentPerceptualLoss
-from .dpm_solver.pipeline_dpm_solver import FontDiffuserDPMPipeline
+from .dpm_solver.pipeline_dpm_solver import FontDiffuserDPMPipeline,FontDiffuserDPMPipelineFewShot
 from .modules import (ContentEncoder,
                      StyleEncoder, 
                      UNet,

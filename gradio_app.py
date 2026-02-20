@@ -1,8 +1,7 @@
 import random
+
 import gradio as gr
-from sample import (arg_parse, 
-                    sampling,
-                    load_fontdiffuer_pipeline)
+from sample import arg_parse, load_fontdiffuer_pipeline, sampling
 
 
 def run_fontdiffuer(source_image, 
@@ -30,6 +29,7 @@ if __name__ == '__main__':
     args.demo = True
     args.ckpt_dir = 'ckpt'
     args.ttf_path = 'ttf/KaiXinSongA.ttf'
+    # args.ttf_path = 'ttf/fonts-japanese-gothic.ttf'
 
     # load fontdiffuer pipeline
     pipe = load_fontdiffuer_pipeline(args=args)
@@ -146,4 +146,4 @@ if __name__ == '__main__':
                     guidance_scale,
                     batch_size],
             outputs=fontdiffuer_output_image)
-    demo.launch(debug=True)
+    demo.launch(debug=True, share=True)

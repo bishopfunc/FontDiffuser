@@ -1,16 +1,14 @@
 import os
-import random
 import time
+from pathlib import Path
 
-import cv2
-import numpy as np
 import torch
 import torchvision.transforms as transforms
 from accelerate.utils import set_seed
 from PIL import Image
 from src import (
-    FontDiffuserDPMPipeline,
-    FontDiffuserModelDPM,
+    FontDiffuserDPMPipelineFewShot,
+    FontDiffuserModelDPMFewShot,
     build_content_encoder,
     build_ddpm_scheduler,
     build_style_encoder,
@@ -22,7 +20,6 @@ from utils import (
     my_single_image,
     save_args_to_yaml,
     save_image_with_content_style,
-    save_single_image,
     ttf2im,
 )
 
@@ -47,6 +44,14 @@ def arg_parse():
     parser.add_argument(
         "--save_image_dir", type=str, default=None, help="The saving directory."
     )
+    parser.add_argument(
+        "--merge_style_refs",
+        default=None,
+        type=str,
+        help="The method to merge multiple style refs. None or 'mean' or 'random_choice'.",
+    )
+    parser.add_argument("--style_image_dir", type=str, default=None)
+
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--ttf_path", type=str, default="ttf/KaiXinSongA.ttf")
     args = parser.parse_args()
@@ -58,42 +63,39 @@ def arg_parse():
     return args
 
 
+def _collect_style_paths(args):
+    paths = []
+
+    style_image_dir = Path(args.style_image_dir)
+    for img_path in style_image_dir.glob("*.png"):
+        paths.append(img_path)
+    return paths
+
+
 def image_process(args, content_image=None, style_image=None):
-    if not args.demo:
-        # Read content image and style image
-        if args.character_input:
-            assert args.content_character is not None, (
-                "The content_character should not be None."
-            )
-            if not is_char_in_font(
-                font_path=args.ttf_path, char=args.content_character
-            ):
-                return None, None
-            font = load_ttf(ttf_path=args.ttf_path)
-            content_image = ttf2im(font=font, char=args.content_character)
-            content_image_pil = content_image.copy()
-        else:
-            content_image = Image.open(args.content_image_path).convert("RGB")
-            content_image_pil = None
-        style_image = Image.open(args.style_image_path).convert("RGB")
+    if args.character_input:
+        assert args.content_character is not None, (
+            "The content_character should not be None."
+        )
+        if not is_char_in_font(font_path=args.ttf_path, char=args.content_character):
+            return None, None, None
+        font = load_ttf(ttf_path=args.ttf_path)
+        content_image = ttf2im(font=font, char=args.content_character)
+        content_image_pil = content_image.copy()
     else:
-        assert style_image is not None, "The style image should not be None."
-        if args.character_input:
-            assert args.content_character is not None, (
-                "The content_character should not be None."
-            )
-            if not is_char_in_font(
-                font_path=args.ttf_path, char=args.content_character
-            ):
-                return None, None
-            font = load_ttf(ttf_path=args.ttf_path)
-            content_image = ttf2im(font=font, char=args.content_character)
-        else:
-            assert content_image is not None, "The content image should not be None."
+        content_image = Image.open(args.content_image_path).convert("RGB")
         content_image_pil = None
 
-    ## Dataset transform
-    content_inference_transforms = transforms.Compose(
+    # ---- style (few-shot) ----
+    style_paths = _collect_style_paths(args)
+    assert len(style_paths) > 0, (
+        f"No style reference images found in {args.style_image_dir}. Please provide at least one image."
+    )
+    print(f"Collected {len(style_paths)} style reference images: {style_paths}")
+    style_images_pil = [Image.open(p).convert("RGB") for p in style_paths]
+
+    # ---- transforms ----
+    content_tf = transforms.Compose(
         [
             transforms.Resize(
                 args.content_image_size,
@@ -103,7 +105,7 @@ def image_process(args, content_image=None, style_image=None):
             transforms.Normalize([0.5], [0.5]),
         ]
     )
-    style_inference_transforms = transforms.Compose(
+    style_tf = transforms.Compose(
         [
             transforms.Resize(
                 args.style_image_size,
@@ -113,10 +115,14 @@ def image_process(args, content_image=None, style_image=None):
             transforms.Normalize([0.5], [0.5]),
         ]
     )
-    content_image = content_inference_transforms(content_image)[None, :]
-    style_image = style_inference_transforms(style_image)[None, :]
 
-    return content_image, style_image, content_image_pil
+    # content: [1, C, H, W]
+    content_tensor = content_tf(content_image).unsqueeze(0)
+
+    # style: [1, C, H, W] * N -> [N, C, H, W]
+    style_tensor_stack = torch.stack([style_tf(im) for im in style_images_pil], dim=0)
+
+    return content_tensor, style_tensor_stack, content_image_pil
 
 
 def load_fontdiffuer_pipeline(args):
@@ -127,7 +133,7 @@ def load_fontdiffuer_pipeline(args):
     style_encoder.load_state_dict(torch.load(f"{args.ckpt_dir}/style_encoder.pth"))
     content_encoder = build_content_encoder(args=args)
     content_encoder.load_state_dict(torch.load(f"{args.ckpt_dir}/content_encoder.pth"))
-    model = FontDiffuserModelDPM(
+    model = FontDiffuserModelDPMFewShot(
         unet=unet, style_encoder=style_encoder, content_encoder=content_encoder
     )
     model.to(args.device)
@@ -138,7 +144,7 @@ def load_fontdiffuer_pipeline(args):
     print("Loaded training DDPM scheduler sucessfully!")
 
     # Load the DPM_Solver to generate the sample.
-    pipe = FontDiffuserDPMPipeline(
+    pipe = FontDiffuserDPMPipelineFewShot(
         model=model,
         ddpm_train_scheduler=train_scheduler,
         model_type=args.model_type,
@@ -150,7 +156,7 @@ def load_fontdiffuer_pipeline(args):
     return pipe
 
 
-def sampling(args, pipe, content_image=None, style_image=None):
+def sampling_fs(args, pipe):
     if not args.demo:
         os.makedirs(args.save_image_dir, exist_ok=True)
         # saving sampling config
@@ -161,31 +167,26 @@ def sampling(args, pipe, content_image=None, style_image=None):
     if args.seed:
         set_seed(seed=args.seed)
 
-    style_image_pil = (
-        Image.open(args.style_image_path)
-        .convert("RGB")
-        .resize(args.content_image_size, Image.BILINEAR)
+    content_image_tensor, style_image_tensor_stack, content_image_pil = image_process(
+        args=args
     )
-    content_image, style_image, content_image_pil = image_process(
-        args=args, content_image=content_image, style_image=style_image
-    )
-    if content_image == None:
-        print(
-            "The content_character you provided is not in the ttf. \
-                Please change the content_character or you can change the ttf."
-        )
-        return None
-
+    if args.save_image:
+        style_paths = _collect_style_paths(args)
+        for style_path in style_paths:
+            image = Image.open(style_path).convert("RGB")
+            my_single_image(
+                save_dir=args.save_image_dir,
+                image=image,
+                save_name=f"ref_{style_path.stem}",
+            )
     with torch.no_grad():
-        content_image = content_image.to(args.device)
-        style_image = style_image.to(args.device)
-        print(f"{content_image.shape=}")
-        print(f"{style_image.shape=}")
+        content_image_tensor = content_image_tensor.to(args.device)
+        style_image_tensor_stack = style_image_tensor_stack.to(args.device)
         print("Sampling by DPM-Solver++ ......")
         start = time.time()
         images = pipe.generate(
-            content_images=content_image,
-            style_images=style_image,
+            content_images=content_image_tensor,
+            style_images_stack=style_image_tensor_stack,  # updated
             batch_size=1,
             order=args.order,
             num_inference_step=args.num_inference_steps,
@@ -205,17 +206,9 @@ def sampling(args, pipe, content_image=None, style_image=None):
             if args.character_input:
                 my_single_image(
                     save_dir=args.save_image_dir,
-                    image=style_image_pil,
-                    save_name="ref_1",
-                )
-                my_single_image(
-                    save_dir=args.save_image_dir,
                     image=images[0],
                     save_name=f"gen_{args.content_character}",
                 )
-            else:
-                save_single_image(save_dir=args.save_image_dir, image=images[0])
-            if args.character_input:
                 save_image_with_content_style(
                     save_dir=args.save_image_dir,
                     image=images[0],
@@ -237,89 +230,9 @@ def sampling(args, pipe, content_image=None, style_image=None):
         return images[0]
 
 
-def load_controlnet_pipeline(
-    args,
-    config_path="lllyasviel/sd-controlnet-canny",
-    ckpt_path="runwayml/stable-diffusion-v1-5",
-):
-    # load controlnet model and pipeline
-    from diffusers import (
-        ControlNetModel,
-        StableDiffusionControlNetPipeline,
-        UniPCMultistepScheduler,
-    )
-
-    controlnet = ControlNetModel.from_pretrained(
-        config_path, torch_dtype=torch.float16, cache_dir=f"{args.ckpt_dir}/controlnet"
-    )
-    print("Loaded ControlNet Model Successfully!")
-    pipe = StableDiffusionControlNetPipeline.from_pretrained(
-        ckpt_path,
-        controlnet=controlnet,
-        torch_dtype=torch.float16,
-        cache_dir=f"{args.ckpt_dir}/controlnet_pipeline",
-    )
-    # faster
-    pipe.scheduler = UniPCMultistepScheduler.from_config(pipe.scheduler.config)
-    pipe.enablemodel_cpu_offload()
-    print("Loaded ControlNet Pipeline Successfully!")
-
-    return pipe
-
-
-def controlnet(text_prompt, pil_image, pipe):
-    image = np.array(pil_image)
-    # get canny image
-    image = cv2.Canny(image=image, threshold1=100, threshold2=200)
-    image = image[:, :, None]
-    image = np.concatenate([image, image, image], axis=2)
-    canny_image = Image.fromarray(image)
-
-    seed = random.randint(0, 10000)
-    generator = torch.manual_seed(seed)
-    image = pipe(
-        text_prompt,
-        num_inference_steps=50,
-        generator=generator,
-        image=canny_image,
-        output_type="pil",
-    ).images[0]
-    return image
-
-
-def load_instructpix2pix_pipeline(args, ckpt_path="timbrooks/instruct-pix2pix"):
-    from diffusers import (
-        EulerAncestralDiscreteScheduler,
-        StableDiffusionInstructPix2PixPipeline,
-    )
-
-    pipe = StableDiffusionInstructPix2PixPipeline.from_pretrained(
-        ckpt_path, torch_dtype=torch.float16
-    )
-    pipe.to(args.device)
-    pipe.scheduler = EulerAncestralDiscreteScheduler.from_config(pipe.scheduler.config)
-
-    return pipe
-
-
-def instructpix2pix(pil_image, text_prompt, pipe):
-    image = pil_image.resize((512, 512))
-    seed = random.randint(0, 10000)
-    generator = torch.manual_seed(seed)
-    image = pipe(
-        prompt=text_prompt,
-        image=image,
-        generator=generator,
-        num_inference_steps=20,
-        image_guidance_scale=1.1,
-    ).images[0]
-
-    return image
-
-
 if __name__ == "__main__":
     args = arg_parse()
 
     # load fontdiffuser pipeline
     pipe = load_fontdiffuer_pipeline(args=args)
-    out_image = sampling(args=args, pipe=pipe)
+    out_image = sampling_fs(args=args, pipe=pipe)

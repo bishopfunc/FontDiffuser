@@ -1,10 +1,10 @@
+import kornia.augmentation as K
 import torch
-
 import torch.nn as nn
+from info_nce import InfoNCE
+
 import src.modules.scr_modules as SCRModules
 
-from info_nce import InfoNCE
-import kornia.augmentation as K
 
 class SCR(nn.Module):
 
