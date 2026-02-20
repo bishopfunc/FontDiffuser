@@ -203,6 +203,7 @@ def main():
     num_train_epochs = math.ceil(args.max_train_steps / num_update_steps_per_epoch)
 
     global_step = 0
+    log_img_step_interval = 100
     for epoch in range(num_train_epochs):
         train_loss = 0.0
         for step, samples in enumerate(train_dataloader):
@@ -266,7 +267,27 @@ def main():
                     target_images=norm_target_ori,
                     device=target_images.device,
                 )
-
+                if global_step % log_img_step_interval == 0:
+                    wandb.log(
+                        {
+                            "samples/content_image": [
+                                wandb.Image(content_images[i])
+                                for i in range(min(4, bsz))
+                            ],
+                            "samples/style_image": [
+                                wandb.Image(style_images[i]) for i in range(min(4, bsz))
+                            ],
+                            "samples/target_image": [
+                                wandb.Image(target_images[i])
+                                for i in range(min(4, bsz))
+                            ],
+                            "samples/pred_original_sample": [
+                                wandb.Image(pred_original_sample[i])
+                                for i in range(min(4, bsz))
+                            ],
+                        },
+                        step=global_step,
+                    )
                 loss = (
                     diff_loss
                     + args.perceptual_coefficient * percep_loss
