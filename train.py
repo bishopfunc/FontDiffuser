@@ -334,17 +334,6 @@ def main():
                 train_loss = 0.0
 
                 if accelerator.is_main_process:
-                    wandb.log(
-                        {
-                            "train/train_loss": train_loss,
-                            "train/lr": lr_scheduler.get_last_lr()[0],
-                            "train/diff_loss": diff_loss.detach().item(),
-                            "train/percep_loss": percep_loss.detach().item(),
-                            "train/offset_loss": offset_loss.detach().item(),
-                        },
-                        step=global_step,
-                    )
-
                     if global_step % args.ckpt_interval == 0:
                         save_dir = f"{args.output_dir}/global_step_{global_step}"
                         os.makedirs(save_dir, exist_ok=True)
@@ -398,6 +387,18 @@ def main():
                 "step_loss": loss.detach().item(),
                 "lr": lr_scheduler.get_last_lr()[0],
             }
+            wandb.log(
+                {
+                    "train/train_loss": train_loss,
+                    "train/step_loss": loss.detach().item(),
+                    "train/sc_loss": sc_loss.detach().item() if args.phase_2 else 0,
+                    "train/lr": lr_scheduler.get_last_lr()[0],
+                    "train/diff_loss": diff_loss.detach().item(),
+                    "train/percep_loss": percep_loss.detach().item(),
+                    "train/offset_loss": offset_loss.detach().item(),
+                },
+                step=global_step,
+            )
             if global_step % args.log_interval == 0:
                 logging.info(
                     f"[{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))}] Global Step {global_step} => train_loss = {loss}"
